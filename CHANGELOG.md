@@ -1,3 +1,8 @@
+## 1.0.1
+
+* Updated SDK environment constraints and package metadata.
+* Updated repository and issue tracker links.
+
 ## 1.0.0
 
 * Initial release of `flutter_communication_avatar`.
