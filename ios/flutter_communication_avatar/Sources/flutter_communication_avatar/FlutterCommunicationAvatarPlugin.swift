@@ -3,12 +3,15 @@ import UIKit
 import UserNotifications
 import Intents
 
-public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
+public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate {
+    private var channel: FlutterMethodChannel?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(name: "flutter_communication_avatar", binaryMessenger: registrar.messenger())
         let instance = FlutterCommunicationAvatarPlugin()
+        instance.channel = channel
         registrar.addMethodCallDelegate(instance, channel: channel)
+        UNUserNotificationCenter.current().delegate = instance
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -26,6 +29,8 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
             handleCancelNotification(call, result: result)
         case "cancelAllNotifications":
             handleCancelAllNotifications(result: result)
+        case "clearAvatarCache":
+            handleClearAvatarCache(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -44,7 +49,11 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
         let conversationTitle = args["conversationTitle"] as? String
         let isGroupConversation = args["isGroupConversation"] as? Bool ?? false
         let soundName = args["sound"] as? String ?? "default"
-        let customPayload = args["payload"] as? [String: String] ?? [:]
+        var customPayload = args["payload"] as? [String: String] ?? [:]
+        let replyPlaceholder = args["replyPlaceholder"] as? String
+        let replyButtonTitle = args["replyButtonTitle"] as? String
+
+        customPayload["conversationId"] = conversationId
 
         let senderMap = args["sender"] as? [String: Any] ?? [:]
         let senderId = senderMap["id"] as? String ?? "unknown_sender"
@@ -67,6 +76,8 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
                 avatarData: avatarData,
                 soundName: soundName,
                 payload: customPayload,
+                replyPlaceholder: replyPlaceholder,
+                replyButtonTitle: replyButtonTitle,
                 result: result
             )
         }
@@ -85,6 +96,8 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
         avatarData: Data?,
         soundName: String,
         payload: [String: String],
+        replyPlaceholder: String?,
+        replyButtonTitle: String?,
         result: @escaping FlutterResult
     ) {
         let content = UNMutableNotificationContent()
@@ -96,6 +109,28 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
             content.sound = UNNotificationSound(named: UNNotificationSoundName(rawValue: soundName))
         }
         content.userInfo = payload
+
+        // Register category for UNTextInputNotificationAction quick reply if requested
+        if replyPlaceholder != nil || replyButtonTitle != nil {
+            let categoryId = "COMMUNICATION_REPLY_CATEGORY"
+            let replyAction = UNTextInputNotificationAction(
+                identifier: "REPLY_ACTION",
+                title: replyButtonTitle ?? "Reply",
+                options: [.foreground],
+                textInputButtonTitle: replyButtonTitle ?? "Send",
+                textInputPlaceholder: replyPlaceholder ?? "Reply..."
+            )
+
+            let category = UNNotificationCategory(
+                identifier: categoryId,
+                actions: [replyAction],
+                intentIdentifiers: [INSendMessageIntentIdentifier],
+                options: [.allowInCarPlay]
+            )
+
+            UNUserNotificationCenter.current().setNotificationCategories([category])
+            content.categoryIdentifier = categoryId
+        }
 
         // Prepare INPerson handle & avatar image
         let handle = INPersonHandle(value: senderId, type: .unknown)
@@ -182,6 +217,27 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    public func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if let textResponse = response as? UNTextInputNotificationResponse {
+            let userText = textResponse.userText
+            let reqId = response.notification.request.identifier
+            let notificationId = Int(reqId) ?? 0
+            let userInfo = response.notification.request.content.userInfo
+            let conversationId = userInfo["conversationId"] as? String ?? userInfo["conversation_id"] as? String ?? ""
+
+            channel?.invokeMethod("onReplyReceived", [
+                "text": userText,
+                "notificationId": notificationId,
+                "conversationId": conversationId
+            ])
+        }
+        completionHandler()
+    }
+
     private func attachFallbackAttachment(content: UNMutableNotificationContent, avatarImage: UIImage?) {
         guard let image = avatarImage, let data = image.pngData() else { return }
         let tempDir = FileManager.default.temporaryDirectory
@@ -232,27 +288,71 @@ public class FlutterCommunicationAvatarPlugin: NSObject, FlutterPlugin {
         result(nil)
     }
 
+    private func handleClearAvatarCache(result: @escaping FlutterResult) {
+        let cacheDir = avatarCacheDirectory
+        do {
+            let fileURLs = try FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil)
+            for fileURL in fileURLs {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+            result(true)
+        } catch {
+            result(FlutterError(code: "CLEAR_CACHE_FAILED", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    private var avatarCacheDirectory: URL {
+        let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        let avatarDir = cachesDir.appendingPathComponent("avatar_cache", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: avatarDir.path) {
+            try? FileManager.default.createDirectory(at: avatarDir, withIntermediateDirectories: true, attributes: nil)
+        }
+        return avatarDir
+    }
+
+    private func getCacheKey(for urlString: String) -> String {
+        var hash: UInt64 = 14695981039346656037
+        for byte in urlString.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1099511628211
+        }
+        return String(format: "avatar_%016llx.png", hash)
+    }
+
     private func fetchOrGenerateAvatarImage(
         avatarUrl: String?,
         fallbackAsset: String?,
         senderName: String,
         completion: @escaping (UIImage?, Data?) -> Void
     ) {
-        // 1. Download HTTP/HTTPS URL
-        if let urlStr = avatarUrl, !urlStr.isEmpty, let url = URL(string: urlStr) {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 5.0
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
-                if let data = data, let image = UIImage(data: data) {
-                    let circularImage = self.createCircularImage(image: image)
-                    let pngData = circularImage.pngData()
-                    completion(circularImage, pngData)
-                    return
-                }
-                self.fallbackAvatarImage(fallbackAsset: fallbackAsset, senderName: senderName, completion: completion)
+        // 1. Check persistent disk cache for avatarUrl (0ms instant load)
+        if let urlStr = avatarUrl, !urlStr.isEmpty {
+            let fileURL = avatarCacheDirectory.appendingPathComponent(getCacheKey(for: urlStr))
+            if FileManager.default.fileExists(atPath: fileURL.path),
+               let data = try? Data(contentsOf: fileURL),
+               let cachedImage = UIImage(data: data) {
+                let circularImage = self.createCircularImage(image: cachedImage)
+                completion(circularImage, circularImage.pngData())
+                return
             }
-            task.resume()
-            return
+
+            if let url = URL(string: urlStr) {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 5.0
+                let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                    if let data = data, let image = UIImage(data: data) {
+                        // Write to disk cache
+                        try? data.write(to: fileURL)
+                        let circularImage = self.createCircularImage(image: image)
+                        let pngData = circularImage.pngData()
+                        completion(circularImage, pngData)
+                        return
+                    }
+                    self.fallbackAvatarImage(fallbackAsset: fallbackAsset, senderName: senderName, completion: completion)
+                }
+                task.resume()
+                return
+            }
         }
 
         fallbackAvatarImage(fallbackAsset: fallbackAsset, senderName: senderName, completion: completion)

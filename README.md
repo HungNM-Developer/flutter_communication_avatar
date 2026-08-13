@@ -14,6 +14,8 @@ Unlike standard notifications, `flutter_communication_avatar` leverages native s
 
 - **iOS Communication Notifications**: Full support for `INSendMessageIntent`, `INPerson`, `INInteraction`, and iOS 15+ notification content updates. Avatar renders on the **LEFT** overlaying the app icon.
 - **Android MessagingStyle**: Full support for `NotificationCompat.MessagingStyle` + `Person` + `IconCompat.createWithBitmap`. Avatar renders on the **LEFT** side of notifications.
+- **Inline Quick Reply**: Respond directly from notification banners via `RemoteInput` + `BroadcastReceiver` on Android and `UNTextInputNotificationAction` + `UNNotificationCategory` on iOS. Listen to replies via `onReplyReceived`.
+- **Smart Disk Avatar Cache (0ms)**: Hashes `avatarUrl` into persistent local disk cache directory (`context.cacheDir` on Android, `cachesDirectory` on iOS) for 0ms instant loads on subsequent messages. Clear cache using `clearAvatarCache()`.
 - **Async Avatar Downloading**: Downloads avatar images asynchronously over HTTP/HTTPS with timeout and caching.
 - **Automatic Fallback Avatar**: If the avatar URL fails, times out, or is omitted, automatically generates a clean circular initial letter badge avatar or uses a custom Flutter asset.
 - **UNNotificationServiceExtension Support**: Includes a Swift extension helper (`CommunicationAvatarExtensionHelper`) for formatting remote push notifications (FCM / APNs) on iOS.
@@ -24,10 +26,10 @@ Unlike standard notifications, `flutter_communication_avatar` leverages native s
 
 ## 📸 Platform Display Matrix
 
-| Platform | Native API | Avatar Location |
-| :--- | :--- | :--- |
-| **iOS 15+** | `INSendMessageIntent` + `INPerson` + `UNNotificationContent` | **LEFT** (overlaying app icon) |
-| **Android 8.0+** | `NotificationCompat.MessagingStyle` + `Person` | **LEFT** (native messaging avatar) |
+| Platform | Native API | Avatar Location | Quick Reply |
+| :--- | :--- | :--- | :--- |
+| **iOS 15+** | `INSendMessageIntent` + `INPerson` + `UNNotificationContent` | **LEFT** (overlaying app icon) | `UNTextInputNotificationAction` |
+| **Android 8.0+** | `NotificationCompat.MessagingStyle` + `Person` | **LEFT** (native messaging avatar) | `RemoteInput` |
 
 ---
 
@@ -37,7 +39,7 @@ Add `flutter_communication_avatar` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_communication_avatar: ^1.0.0
+  flutter_communication_avatar: ^1.1.0
 ```
 
 Run `flutter pub get` to install.
@@ -111,7 +113,7 @@ class NotificationService: UNNotificationServiceExtension {
 
 On Android 13+ (API level 33+), ensure you request notification permissions at runtime using the plugin API.
 
-No complex AndroidManifest changes are required. Notification channels are created automatically or via `createNotificationChannel()`.
+No complex AndroidManifest changes are required. Notification channels and quick reply broadcast receivers are registered automatically.
 
 ---
 
@@ -149,7 +151,50 @@ Future<void> sendChatNotification() async {
 
 ---
 
-### 2. Group Conversation Notification
+### 2. Inline Quick Reply Notification
+
+Enable direct text response inputs on notification banners across iOS and Android:
+
+```dart
+// 1. Listen for inline quick replies anywhere in your Flutter app
+FlutterCommunicationAvatar.instance.onReplyReceived((String text, int notificationId, String conversationId) {
+  print('User replied "$text" to notification $notificationId in conversation $conversationId');
+  // Send reply back to server / update local UI...
+});
+
+// 2. Send notification with inline quick reply input enabled
+final notification = CommunicationNotification(
+  id: 1004,
+  body: 'Are you ready for the meeting?',
+  sender: const CommunicationPerson(
+    id: 'user_bob_456',
+    name: 'Bob Johnson',
+    avatarUrl: 'https://example.com/avatars/bob.png',
+  ),
+  conversationId: 'chat_bob_456',
+  replyPlaceholder: 'Type a reply...',
+  replyButtonTitle: 'Send Reply',
+);
+
+await FlutterCommunicationAvatar.instance.showNotification(notification);
+```
+
+---
+
+### 3. Smart Disk Avatar Cache (0ms Instant Load)
+
+Avatars are automatically hashed and persisted on local disk (`context.cacheDir` on Android, `cachesDirectory` on iOS). Subsequent messages from the same avatar URL load instantly in 0ms without network overhead.
+
+To clear disk cached avatars:
+
+```dart
+final cleared = await FlutterCommunicationAvatar.instance.clearAvatarCache();
+print('Avatar cache cleared: $cleared');
+```
+
+---
+
+### 4. Group Conversation Notification
 
 ```dart
 final sender = CommunicationPerson(
@@ -173,7 +218,7 @@ await FlutterCommunicationAvatar.instance.showNotification(notification);
 
 ---
 
-### 3. Fallback Avatar (Initial Letter Badge)
+### 5. Fallback Avatar (Initial Letter Badge)
 
 If no `avatarUrl` is provided or if network download fails, a letter avatar is automatically generated:
 
@@ -196,7 +241,7 @@ await FlutterCommunicationAvatar.instance.showNotification(notification);
 
 ---
 
-### 4. Managing Notification Channels (Android)
+### 6. Managing Notification Channels (Android)
 
 ```dart
 await FlutterCommunicationAvatar.instance.createNotificationChannel(
@@ -211,7 +256,7 @@ await FlutterCommunicationAvatar.instance.createNotificationChannel(
 
 ---
 
-### 5. Canceling Notifications
+### 7. Canceling Notifications
 
 ```dart
 // Cancel specific notification by ID
@@ -270,6 +315,22 @@ dart run flutter_communication_avatar:setup_ios --extension
 | `isGroupConversation` | `bool` | Flag for group conversations. |
 | `channelId` | `String` | Android notification channel ID. |
 | `sound` | `String?` | Notification sound ("default" or custom). |
+| `replyPlaceholder` | `String?` | Placeholder text for inline quick reply field. |
+| `replyButtonTitle` | `String?` | Button text for quick reply action. |
+
+---
+
+### `FlutterCommunicationAvatar` (Plugin Methods)
+
+| Method | Return Type | Description |
+| :--- | :--- | :--- |
+| `showNotification(notification)` | `Future<bool>` | Displays communication notification with avatar. |
+| `onReplyReceived(callback)` | `void` | Registers listener for inline quick replies. |
+| `clearAvatarCache()` | `Future<bool>` | Clears persistent disk avatar cache. |
+| `requestPermissions()` | `Future<bool>` | Requests notification permissions. |
+| `hasPermissions()` | `Future<bool>` | Checks if notification permissions granted. |
+| `cancelNotification(id)` | `Future<void>` | Cancels specific notification. |
+| `cancelAllNotifications()` | `Future<void>` | Cancels all active notifications. |
 
 ---
 

@@ -53,4 +53,16 @@ abstract class FlutterCommunicationAvatarPlatform extends PlatformInterface {
   Future<void> cancelAllNotifications() {
     throw UnimplementedError('cancelAllNotifications() has not been implemented.');
   }
+
+  /// Registers a callback to be invoked when an inline quick reply is received.
+  void onReplyReceived(
+      void Function(String text, int notificationId, String conversationId)
+          callback) {
+    throw UnimplementedError('onReplyReceived() has not been implemented.');
+  }
+
+  /// Clears all cached avatar images from local disk.
+  Future<bool> clearAvatarCache() {
+    throw UnimplementedError('clearAvatarCache() has not been implemented.');
+  }
 }

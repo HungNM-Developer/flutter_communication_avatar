@@ -2,7 +2,9 @@ package dev.hungnguyen.flutter_communication_avatar
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.os.Build
@@ -11,6 +13,7 @@ import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
 import io.flutter.FlutterInjector
@@ -19,8 +22,11 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.Executors
 
 /**
@@ -28,6 +34,7 @@ import java.util.concurrent.Executors
  *
  * Implements native Android communication push notifications with user avatars using
  * NotificationCompat.MessagingStyle and Person icons (Avatar displayed on the LEFT).
+ * Supports inline quick reply and persistent disk-based avatar caching.
  */
 class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
     private lateinit var channel: MethodChannel
@@ -35,10 +42,29 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
     private val executor = Executors.newCachedThreadPool()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    companion object {
+        private var pluginInstance: FlutterCommunicationAvatarPlugin? = null
+
+        fun onReplyReceived(text: String, notificationId: Int, conversationId: String) {
+            val instance = pluginInstance ?: return
+            instance.mainHandler.post {
+                instance.channel.invokeMethod(
+                    "onReplyReceived",
+                    mapOf(
+                        "text" to text,
+                        "notificationId" to notificationId,
+                        "conversationId" to conversationId
+                    )
+                )
+            }
+        }
+    }
+
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         context = flutterPluginBinding.applicationContext
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "flutter_communication_avatar")
         channel.setMethodCallHandler(this)
+        pluginInstance = this
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -49,6 +75,7 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
             "hasPermissions" -> handleHasPermissions(result)
             "cancelNotification" -> handleCancelNotification(call, result)
             "cancelAllNotifications" -> handleCancelAllNotifications(result)
+            "clearAvatarCache" -> handleClearAvatarCache(result)
             else -> result.notImplemented()
         }
     }
@@ -71,6 +98,8 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
                 val channelName = args["channelName"] as? String ?: "Messages"
                 val channelDescription = args["channelDescription"] as? String
                 val timestamp = (args["timestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
+                val replyPlaceholder = args["replyPlaceholder"] as? String
+                val replyButtonTitle = args["replyButtonTitle"] as? String
 
                 val senderMap = args["sender"] as? Map<*, *>
                 val senderId = senderMap?.get("id") as? String ?: "unknown_sender"
@@ -83,7 +112,7 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
                 // Ensure notification channel exists
                 ensureNotificationChannel(channelId, channelName, channelDescription)
 
-                // Fetch or generate avatar bitmap asynchronously
+                // Fetch or generate avatar bitmap asynchronously (with disk cache)
                 val avatarBitmap = fetchOrGenerateAvatar(context, avatarUrl, fallbackAsset, senderName)
 
                 // Build Person for MessagingStyle (Icon placed on LEFT of notification)
@@ -121,6 +150,43 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
                     .setAutoCancel(true)
                     .setDefaults(NotificationCompat.DEFAULT_ALL)
                     .setWhen(timestamp)
+
+                // Add RemoteInput inline reply action if reply fields are specified
+                if (!replyPlaceholder.isNull_or_empty() || !replyButtonTitle.isNull_or_empty()) {
+                    val remoteInput = RemoteInput.Builder(QuickReplyReceiver.KEY_TEXT_REPLY)
+                        .setLabel(replyPlaceholder ?: "Reply...")
+                        .build()
+
+                    val replyIntent = Intent(context, QuickReplyReceiver::class.java).apply {
+                        action = QuickReplyReceiver.ACTION_REPLY
+                        putExtra(QuickReplyReceiver.EXTRA_NOTIFICATION_ID, id)
+                        putExtra(QuickReplyReceiver.EXTRA_CONVERSATION_ID, conversationId)
+                    }
+
+                    val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                    } else {
+                        PendingIntent.FLAG_UPDATE_CURRENT
+                    }
+
+                    val replyPendingIntent = PendingIntent.getBroadcast(
+                        context,
+                        id,
+                        replyIntent,
+                        flags
+                    )
+
+                    val replyAction = NotificationCompat.Action.Builder(
+                        android.R.drawable.ic_menu_send,
+                        replyButtonTitle ?: "Reply",
+                        replyPendingIntent
+                    )
+                        .addRemoteInput(remoteInput)
+                        .setAllowGeneratedReplies(true)
+                        .build()
+
+                    notificationBuilder.addAction(replyAction)
+                }
 
                 val notificationManager = NotificationManagerCompat.from(context)
                 if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < 33) {
@@ -179,6 +245,22 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
         result.success(null)
     }
 
+    private fun handleClearAvatarCache(result: Result) {
+        executor.execute {
+            try {
+                val cacheDir = File(context.cacheDir, "avatar_cache")
+                if (cacheDir.exists()) {
+                    cacheDir.listFiles()?.forEach { file ->
+                        file.delete()
+                    }
+                }
+                mainHandler.post { result.success(true) }
+            } catch (e: Exception) {
+                mainHandler.post { result.error("CLEAR_CACHE_FAILED", e.localizedMessage, null) }
+            }
+        }
+    }
+
     private fun ensureNotificationChannel(id: String, name: String, description: String?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -213,8 +295,27 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
         fallbackAsset: String?,
         senderName: String
     ): Bitmap {
-        // 1. Try downloading HTTP/HTTPS avatar URL
+        // 1. Check persistent disk cache for avatarUrl (0ms instant load)
         if (!avatarUrl.isNull_or_empty()) {
+            val cacheDir = File(context.cacheDir, "avatar_cache")
+            if (!cacheDir.exists()) {
+                cacheDir.mkdirs()
+            }
+            val cacheKey = getCacheKey(avatarUrl)
+            val cacheFile = File(cacheDir, "$cacheKey.png")
+
+            if (cacheFile.exists() && cacheFile.length() > 0) {
+                try {
+                    val cachedBitmap = BitmapFactory.decodeFile(cacheFile.absolutePath)
+                    if (cachedBitmap != null) {
+                        return getCircularBitmap(cachedBitmap)
+                    }
+                } catch (_: Exception) {
+                    // Fallback to HTTP download if cached file corrupted
+                }
+            }
+
+            // Download over HTTP/HTTPS and save to disk cache
             try {
                 val url = URL(avatarUrl)
                 val connection = url.openConnection() as HttpURLConnection
@@ -228,6 +329,12 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
                     val originalBitmap = BitmapFactory.decodeStream(inputStream)
                     inputStream.close()
                     if (originalBitmap != null) {
+                        // Write original bitmap to disk cache
+                        try {
+                            FileOutputStream(cacheFile).use { out ->
+                                originalBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                            }
+                        } catch (_: Exception) {}
                         return getCircularBitmap(originalBitmap)
                     }
                 }
@@ -253,6 +360,16 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
 
         // 3. Generate fallback circular avatar with sender's initial letter
         return generateLetterAvatar(senderName)
+    }
+
+    private fun getCacheKey(url: String): String {
+        return try {
+            val md = MessageDigest.getInstance("SHA-256")
+            val digest = md.digest(url.toByteArray(Charsets.UTF_8))
+            digest.joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            url.hashCode().toString()
+        }
     }
 
     private fun getCircularBitmap(bitmap: Bitmap): Bitmap {
@@ -324,6 +441,9 @@ class FlutterCommunicationAvatarPlugin : FlutterPlugin, MethodCallHandler {
     private fun String?.isNull_or_empty(): Boolean = this == null || this.trim().isEmpty()
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        if (pluginInstance == this) {
+            pluginInstance = null
+        }
         channel.setMethodCallHandler(null)
         executor.shutdown()
     }

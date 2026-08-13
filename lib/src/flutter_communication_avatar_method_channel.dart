@@ -12,6 +12,27 @@ class MethodChannelFlutterCommunicationAvatar
   @visibleForTesting
   final methodChannel = const MethodChannel('flutter_communication_avatar');
 
+  void Function(String text, int notificationId, String conversationId)?
+      _onReplyCallback;
+
+  @override
+  void onReplyReceived(
+      void Function(String text, int notificationId, String conversationId)
+          callback) {
+    _onReplyCallback = callback;
+    methodChannel.setMethodCallHandler(_handleMethodCall);
+  }
+
+  Future<dynamic> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'onReplyReceived') {
+      final args = Map<String, dynamic>.from(call.arguments as Map? ?? {});
+      final text = args['text'] as String? ?? '';
+      final notificationId = args['notificationId'] as int? ?? 0;
+      final conversationId = args['conversationId'] as String? ?? '';
+      _onReplyCallback?.call(text, notificationId, conversationId);
+    }
+  }
+
   @override
   Future<bool> showNotification(CommunicationNotification notification) async {
     final result = await methodChannel.invokeMethod<bool>(
@@ -51,5 +72,11 @@ class MethodChannelFlutterCommunicationAvatar
   @override
   Future<void> cancelAllNotifications() async {
     await methodChannel.invokeMethod<void>('cancelAllNotifications');
+  }
+
+  @override
+  Future<bool> clearAvatarCache() async {
+    final result = await methodChannel.invokeMethod<bool>('clearAvatarCache');
+    return result ?? false;
   }
 }

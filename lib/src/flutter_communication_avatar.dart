@@ -46,4 +46,16 @@ class FlutterCommunicationAvatar {
   Future<void> cancelAllNotifications() {
     return FlutterCommunicationAvatarPlatform.instance.cancelAllNotifications();
   }
+
+  /// Registers a callback listener to handle inline text replies sent from notification banners.
+  void onReplyReceived(
+      void Function(String text, int notificationId, String conversationId)
+          callback) {
+    FlutterCommunicationAvatarPlatform.instance.onReplyReceived(callback);
+  }
+
+  /// Clears all avatar images stored in local persistent disk cache.
+  Future<bool> clearAvatarCache() {
+    return FlutterCommunicationAvatarPlatform.instance.clearAvatarCache();
+  }
 }

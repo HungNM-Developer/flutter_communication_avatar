@@ -1,3 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   package="dev.hungnguyen.flutter_communication_avatar">
+  <application>
+    <receiver
+        android:name=".QuickReplyReceiver"
+        android:exported="false">
+      <intent-filter>
+        <action android:name="dev.hungnguyen.flutter_communication_avatar.ACTION_REPLY" />
+      </intent-filter>
+    </receiver>
+  </application>
 </manifest>

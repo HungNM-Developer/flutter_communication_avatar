@@ -41,6 +41,12 @@ class CommunicationNotification {
   /// Optional custom payload data as key-value string map.
   final Map<String, String>? payload;
 
+  /// Optional placeholder text for inline quick reply input field.
+  final String? replyPlaceholder;
+
+  /// Optional button title for inline quick reply action.
+  final String? replyButtonTitle;
+
   const CommunicationNotification({
     required this.id,
     required this.body,
@@ -55,6 +61,8 @@ class CommunicationNotification {
     this.timestamp,
     this.sound = 'default',
     this.payload,
+    this.replyPlaceholder,
+    this.replyButtonTitle,
   });
 
   /// Converts the [CommunicationNotification] to a JSON-encodable map.
@@ -73,6 +81,8 @@ class CommunicationNotification {
       'timestamp': timestamp ?? DateTime.now().millisecondsSinceEpoch,
       'sound': sound,
       'payload': payload,
+      'replyPlaceholder': replyPlaceholder,
+      'replyButtonTitle': replyButtonTitle,
     };
   }
 
@@ -96,6 +106,8 @@ class CommunicationNotification {
       payload: map['payload'] != null
           ? Map<String, String>.from(map['payload'] as Map)
           : null,
+      replyPlaceholder: map['replyPlaceholder'] as String?,
+      replyButtonTitle: map['replyButtonTitle'] as String?,
     );
   }
 }
