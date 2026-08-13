@@ -1,8 +1,8 @@
 name: flutter_communication_avatar
 description: A production-ready Flutter plugin for native communication push notifications with user avatars on iOS (INSendMessageIntent) and Android (MessagingStyle).
 version: 1.0.0
-repository: https://github.com/hungnguyen/flutter_communication_avatar
-issue_tracker: https://github.com/hungnguyen/flutter_communication_avatar/issues
+repository: https://github.com/HungNM-Developer/flutter_communication_avatar
+issue_tracker: https://github.com/HungNM-Developer/flutter_communication_avatar/issues
 topics:
   - notifications
   - communication
